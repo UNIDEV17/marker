@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:latest
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: marker
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: marker
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql # <- was /var/lib/postgresql/data
+
+volumes:
+  pgdata:

@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { pool } from "./db.js";
 
 const app = Fastify({ logger: true });
 
@@ -7,8 +8,16 @@ app.get("/", async () => {
 });
 
 app.get("/health", async () => {
-  return { status: "ok" };
+  try {
+    await pool.query("SELECT 1");
+    return { ok: true, db: "up" };
+  } catch (error) {
+    reply.code(503);
+    return { ok: false, db: "down" };
+  }
 });
-
+app.get("/what", async (params: type) => {
+  return { status: "fine" };
+});
 await app.listen({ port: 3000 });
 // TODO: add /health route
