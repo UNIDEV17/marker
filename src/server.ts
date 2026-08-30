@@ -2,6 +2,12 @@ import Fastify from "fastify";
 import { pool } from "./db.js";
 import { Bookmark } from "./types.js";
 import { bookmarkchecker } from "./helper.js";
+import * as zod from "zod";
+const userSchema = zod.object({
+  username: zod.string().min(3).max(20),
+  email: zod.string().email(),
+  password: zod.string().min(6).max(100),
+});
 
 /*
 let bookmarkone = {
@@ -55,6 +61,23 @@ app.post("/bookmarks", async (request, reply) => {
     console.error("Error creating bookmark:", error);
     reply.code(500);
     return { ok: false, error: "Unable to create bookmark" };
+  }
+});
+
+app.post("/auth/register", async (request, reply) => {
+  try {
+    const parsedData = userSchema.parse(request.body);
+    console.log(request.body, "request body");
+    await pool.query(
+      "INSERT INTO users (username, email, password) VALUES ($1, $2, $3)",
+      [parsedData.username, parsedData.email, parsedData.password],
+    );
+    console.log("Parsed user data:", parsedData);
+    return true;
+  } catch (error) {
+    reply.code(400);
+    console.error("Error registering user:", error);
+    return { ok: false, error: "Invalid user data1" };
   }
 });
 await app.listen({ port: 3000 });
