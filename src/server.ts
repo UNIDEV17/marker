@@ -2,6 +2,8 @@ import Fastify from "fastify";
 import { pool } from "./db.js";
 import { Bookmark } from "./types.js";
 import { bookmarkchecker } from "./helper.js";
+import argon2 from "@node-rs/argon2";
+import crypto from "crypto";
 import * as zod from "zod";
 const userSchema = zod.object({
   username: zod.string().min(3).max(20),
@@ -18,7 +20,8 @@ bookmarkchecker(bookmarkone);
 */
 
 const app = Fastify({ logger: true });
-
+const DUMMY_HASH =
+  "$argon2id$v=19$m=4096,t=3,p=1$Wm9uZQ$0v8J5x4F5g5g5g5g5g5g5g"; // Dummy hash for timing attack prevention
 app.get("/", async () => {
   return { ok: true };
 });
@@ -68,9 +71,10 @@ app.post("/auth/register", async (request, reply) => {
   try {
     const parsedData = userSchema.parse(request.body);
     console.log(request.body, "request body");
+    const hashedPassword = await argon2.hash(parsedData.password);
     await pool.query(
       "INSERT INTO users (username, email, password) VALUES ($1, $2, $3)",
-      [parsedData.username, parsedData.email, parsedData.password],
+      [parsedData.username, parsedData.email, hashedPassword],
     );
     console.log("Parsed user data:", parsedData);
     return true;
@@ -78,6 +82,44 @@ app.post("/auth/register", async (request, reply) => {
     reply.code(400);
     console.error("Error registering user:", error);
     return { ok: false, error: "Invalid user data1" };
+  }
+});
+
+app.post("/auth/login", async (request, reply) => {
+  try {
+    const parseddata = userSchema
+      .pick({ email: true, password: true })
+      .parse(request.body);
+    console.log(parseddata, "parsed data");
+    const { rows } = await pool.query("SELECT * FROM users WHERE email = $1", [
+      parseddata.email,
+    ]);
+    const user = rows[0];
+
+    const hashToVerify = user ? user.password : null;
+    const isVaild = await argon2.verify(hashToVerify, parseddata.password);
+    if (!user || !isVaild) {
+      reply.code(401);
+      return { ok: false, error: "Invalid email or password" };
+    }
+
+    const token = crypto.randomBytes(32).toString("base64");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+
+    await pool.query(
+      "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
+      [tokenHash, user.id, expiresAt],
+    );
+
+    console.log(rows, "user rows");
+    return { ok: true, token };
+  } catch (error) {
+    reply.code(400);
+    console.error("Error logging in user:", error);
+    return { ok: false, error: "Invalid login data" };
   }
 });
 await app.listen({ port: 3000 });
