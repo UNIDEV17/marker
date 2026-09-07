@@ -1,10 +1,16 @@
-import Fastify from "fastify";
+import Fastify, { fastify } from "fastify";
 import { pool } from "./db.js";
 import { Bookmark } from "./types.js";
 import { bookmarkchecker } from "./helper.js";
 import argon2 from "@node-rs/argon2";
 import crypto from "crypto";
 import * as zod from "zod";
+import cookie from "@fastify/cookie";
+import { requireAuth } from "./auth.js";
+import { generateUUID } from "./middleware.js";
+import { request } from "https";
+import { AppError } from "./errors.js";
+
 const userSchema = zod.object({
   username: zod.string().min(3).max(20),
   email: zod.string().email(),
@@ -25,6 +31,21 @@ const DUMMY_HASH =
 app.get("/", async () => {
   return { ok: true };
 });
+await app.register(cookie, {
+  secret: process.env.COOKIE_SECRET || "change-this-in-production", // for signed cookies
+  hook: "onRequest", // parse cookies on every request
+  parseOptions: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production", // false in dev
+    sameSite: "lax",
+    maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days in ms
+    path: "/",
+  },
+});
+
+const sessions = new Map();
+
+app.decorate("sessions", sessions);
 
 app.get("/health", async (_request, reply) => {
   try {
@@ -38,17 +59,16 @@ app.get("/health", async (_request, reply) => {
 app.get("/what", async () => {
   return { status: "fine" };
 });
-app.get("/bookmarks", async (_request, reply) => {
+app.get("/bookmarks", { preHandler: requireAuth }, async (_request, reply) => {
   try {
     const { rows } = await pool.query<Bookmark[]>("SELECT * FROM bookmarks");
-    console.log("rows are shown", rows, typeof rows);
     return rows;
   } catch (error) {
     reply.code(500);
     return { ok: false, error: "Unable to load bookmarks" };
   }
 });
-app.post("/bookmarks", async (request, reply) => {
+app.post("/bookmarks", { preHandler: requireAuth }, async (request, reply) => {
   const { url, title } = request.body as { url: string; title: string };
   try {
     if (!bookmarkchecker({ URL: url, title })) {
@@ -85,8 +105,33 @@ app.post("/auth/register", async (request, reply) => {
   }
 });
 
+app.post("/auth/logout", async (request, reply) => {
+  try {
+    const sessionId = request.cookies.sessionId;
+    console.log("nothing here", sessionId);
+    if (sessionId) {
+      console.log("Logging out user with sessionId:", sessionId);
+      const tokenHash = crypto
+        .createHash("sha256")
+        .update(sessionId)
+        .digest("hex");
+      console.log("Token hash to delete:", tokenHash);
+      await pool.query("DELETE FROM sessions WHERE token_hash = $1", [
+        tokenHash,
+      ]);
+      reply.clearCookie("sessionId");
+    }
+  } catch (error) {
+    console.error("Error logging out user:", error);
+  }
+});
+app.get("/auth/me", { preHandler: requireAuth }, async (request, reply) => {
+  return { ok: true, user: request.user }; // if requireAuth sets request.user
+});
 app.post("/auth/login", async (request, reply) => {
   try {
+    generateUUID(request, reply);
+    console.log("Generated UUID:", request.uuid);
     const parseddata = userSchema
       .pick({ email: true, password: true })
       .parse(request.body);
@@ -102,7 +147,15 @@ app.post("/auth/login", async (request, reply) => {
       reply.code(401);
       return { ok: false, error: "Invalid email or password" };
     }
+    const { rows: existingSessions } = await pool.query(
+      "SELECT 1 FROM sessions WHERE user_id = $1 AND expires_at > NOW()",
+      [user.id],
+    );
 
+    if (existingSessions.length > 0) {
+      reply.code(400);
+      return { ok: false, error: "Session already exists" };
+    }
     const token = crypto.randomBytes(32).toString("base64");
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
 
@@ -115,12 +168,62 @@ app.post("/auth/login", async (request, reply) => {
     );
 
     console.log(rows, "user rows");
+    reply.setCookie("sessionId", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 1000 * 60 * 60 * 24 * 7,
+      path: "/",
+    });
     return { ok: true, token };
   } catch (error) {
     reply.code(400);
     console.error("Error logging in user:", error);
     return { ok: false, error: "Invalid login data" };
   }
+});
+app.setErrorHandler((error, request, reply) => {
+  // Log full detail server-side always — this never reaches the client
+  request.log.error({ err: error, reqId: request.id }, "Request error");
+
+  // 1. Your own known error types
+  if (error instanceof AppError) {
+    return reply.code(error.statusCode).send({
+      ok: false,
+      error: error.message,
+    });
+  }
+
+  // 2. Zod validation errors (thrown by userSchema.parse(...))
+  if (error instanceof zod.ZodError) {
+    return reply.code(400).send({
+      ok: false,
+      error: "Invalid request data",
+      details: error.issues.map((i) => ({
+        path: i.path.join("."),
+        message: i.message,
+      })),
+    });
+  }
+
+  // 3. Fastify's own errors (bad JSON body, unsupported content-type, etc.)
+  if (
+    error instanceof Error &&
+    "statusCode" in error &&
+    typeof error.statusCode === "number" &&
+    error.statusCode < 500
+  ) {
+    return reply.code(error.statusCode).send({
+      ok: false,
+      error: error.message,
+    });
+  }
+
+  // 4. Anything else = unexpected bug. Never leak internals.
+  return reply.code(500).send({
+    ok: false,
+    error: "Internal server error",
+  });
 });
 await app.listen({ port: 3000 });
 // TODO: add /health route

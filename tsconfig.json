@@ -9,8 +9,10 @@
     "skipLibCheck": true,
     "noEmit": true,
     "noUncheckedIndexedAccess": true,
+    "allowJs": true,
+    "checkJs": false,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "*.ts"],
   "exclude": ["node_modules"]
 }

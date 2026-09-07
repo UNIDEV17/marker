@@ -1,0 +1,5 @@
+name: local
+variables:
+  - secret: true
+    name: baseUrl
+    description: ""
