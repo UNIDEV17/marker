@@ -59,15 +59,79 @@ app.get("/health", async (_request, reply) => {
 app.get("/what", async () => {
   return { status: "fine" };
 });
-app.get("/bookmarks", { preHandler: requireAuth }, async (_request, reply) => {
+app.get("/bookmarks", { preHandler: requireAuth }, async (request, reply) => {
   try {
-    const { rows } = await pool.query<Bookmark[]>("SELECT * FROM bookmarks");
+    const objtest =
+      (request.query as { limit?: number; cursor?: string }) || {};
+    console.log("Query parameters:", objtest.limit, objtest.cursor);
+    console.log(
+      "Fetching bookmarks",
+      request.query,
+      request.user,
+      request.params,
+    );
+    const { rows } = await pool.query<Bookmark[]>(
+      "SELECT * FROM bookmarks WHERE user_id = $1 AND created_at < $2 ORDER BY created_at DESC LIMIT $3",
+      [
+        request.user!.id,
+        objtest.cursor || new Date().toISOString(),
+        objtest.limit || 10,
+      ],
+    );
+
+    console.log(rows, "rows");
+
     return rows;
   } catch (error) {
     reply.code(500);
     return { ok: false, error: "Unable to load bookmarks" };
   }
 });
+app.delete(
+  "/bookmarks/:id",
+  { preHandler: requireAuth },
+  async (request, reply) => {
+    const { id } = request.params as { id: number };
+    if (request.user?.id !== id) {
+      reply.code(403);
+      return { ok: false, error: "You cannot delete your own bookmark" };
+    }
+    try {
+      await pool.query("DELETE FROM bookmarks WHERE id = $1 AND user_id = $2", [
+        id,
+        request.user!.id,
+      ]);
+      return { ok: true };
+    } catch (error) {
+      console.error("Error deleting bookmark:", error);
+      reply.code(500);
+      return { ok: false, error: "Unable to delete bookmark" };
+    }
+  },
+);
+app.patch(
+  "/bookmarks/:id",
+  { preHandler: requireAuth },
+  async (request, reply) => {
+    const { id } = request.params as { id: number };
+    const { url, title } = request.body as { url?: string; title?: string };
+    if (request.user?.id !== id) {
+      reply.code(403);
+      return { ok: false, error: "You cannot update your own bookmark" };
+    }
+    try {
+      await pool.query(
+        "UPDATE bookmarks SET url = $1, title = $2 WHERE id = $3 AND user_id = $4",
+        [url, title, id, request.user!.id],
+      );
+      return { ok: true };
+    } catch (error) {
+      console.error("Error updating bookmark:", error);
+      reply.code(500);
+      return { ok: false, error: "Unable to update bookmark" };
+    }
+  },
+);
 app.post("/bookmarks", { preHandler: requireAuth }, async (request, reply) => {
   const { url, title } = request.body as { url: string; title: string };
   try {
@@ -76,8 +140,8 @@ app.post("/bookmarks", { preHandler: requireAuth }, async (request, reply) => {
       return { ok: false, error: "Invalid bookmark data" };
     }
     const { rows } = await pool.query(
-      'INSERT INTO bookmarks ("URL", "title") VALUES ($1, $2) RETURNING *',
-      [url, title],
+      'INSERT INTO bookmarks ("URL", "title", user_id) VALUES ($1, $2, $3) RETURNING *',
+      [url, title, request.user!.id],
     );
     return rows[0] as Bookmark;
   } catch (error) {
@@ -151,7 +215,7 @@ app.post("/auth/login", async (request, reply) => {
       "SELECT 1 FROM sessions WHERE user_id = $1 AND expires_at > NOW()",
       [user.id],
     );
-
+    console.log(existingSessions, "existing sessions");
     if (existingSessions.length > 0) {
       reply.code(400);
       return { ok: false, error: "Session already exists" };

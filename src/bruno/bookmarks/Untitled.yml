@@ -1,0 +1,23 @@
+info:
+  name: Untitled
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{baseUrl}}/bookmarks"
+  body:
+    type: json
+    data: |-
+      {
+        "url": "https://www.fitness.com",
+        "title": "fitness"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false
